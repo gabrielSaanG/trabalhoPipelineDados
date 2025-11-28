@@ -188,13 +188,13 @@ def extract_bronze(**context):
 
             zip_files = [os.path.basename(zip_local_path)]
 
+            zip_full = os.path.join(zip_file_path, zip_files[0])
+            with ZipFile(zip_full, 'r') as z:
+                z.extractall(extract_to_path)
         except Exception as e:
             print(f"Erro ao baixar arquivo: {e}")
             return {"registros": 0}
 
-    zip_full = os.path.join(zip_file_path, zip_files[0])
-    with ZipFile(zip_full, 'r') as z:
-        z.extractall(extract_to_path)
 
     csvs = [f for f in os.listdir(extract_to_path) if f.endswith(".csv")]
     if csvs:
@@ -236,7 +236,17 @@ def limpar_dados(**context):
     df = spark.read.parquet(parquet_silver_raw_path)
 
     df = df.na.drop(subset=["CNPJ_BASICO", "UF", "MUNICIPIO"])
-    df = df.fillna({"NOME_FANTASIA": "SEM_NOME", "CORREIO_ELETRONICO": "NAO_INFORMADO"})
+    df = df.fillna({"NOME_FANTASIA": "SEM_NOME",
+                    "CORREIO_ELETRONICO": "NAO_INFORMADO",
+                    "DDD_1": "NAO_INFORMADO", "DDD_2": "NAO_INFORMADO",
+                    "TELEFONE_2": "NAO_INFORMADO",
+                    "DDD_FAX": "NAO_INFORMADO",
+                    "FAX": "NAO_INFORMADO",
+                    "DATA_SITUACAO_ESPECIAL": "NAO_INFORMADO",
+                    "COMPLEMENTO": "NAO_INFORMADO",
+                    "NOME_CIDADE_EXTERIOR": "NAO_INFORMADO",
+                    "PAIS": "BRASIL"
+                    })
     df.write.mode("overwrite").parquet(parquet_silver_clean_path)
     return {"registros": df.count()}
 
@@ -249,7 +259,7 @@ def transformar_dados(**context):
     df = df.withColumn("CNPJ_COMPLETO", concat_ws("", col("CNPJ_BASICO"), col("CNPJ_ORDEM"), col("CNPJ_DV")))
     df = df.withColumn("DATA_ABERTURA", F.to_date(col("DATA_INICIO_ATIVIDADE"), "yyyyMMdd"))
     df = df.withColumn("IDADE_EM_ANOS", F.floor(F.datediff(F.current_date(), col("DATA_ABERTURA")) / 365))
-    df = df.withColumn("ATIVO", (col("SITUACAO_CADASTRAL") == "02").cast("boolean"))
+    df = df.withColumn("ATIVO", (col("SITUACAO_CADASTRAL") == "02").cast('boolean'))
 
     df.write.mode("overwrite").parquet(parquet_gold_path)
     return {"registros": df.count()}
@@ -259,18 +269,69 @@ def transformar_dados(**context):
 def gerar_estatisticas(**context):
     spark = SparkSession.builder.appName("estatisticas").getOrCreate()
     df = spark.read.parquet(parquet_gold_path)
-    total = df.count()
-    return {"registros": total}
+
+    # Estatísticas gerais
+    total_registros = df.count()
+    total_colunas = len(df.columns)
+
+    # Tamanho aproximado do dataset em MB
+    tamanho_bytes = df.rdd.map(lambda r: len(str(r))).sum()
+    tamanho_mb = tamanho_bytes / (1024 * 1024)
+
+    # Contagem de nulos por coluna
+    nulos_por_coluna = {
+        c: df.filter(df[c].isNull()).count() for c in df.columns
+    }
+
+    # Tipos de dados das colunas
+    tipos_colunas = {
+        c: str(df.schema[c].dataType) for c in df.columns
+    }
+
+    # Estatísticas numéricas básicas (se houver colunas numéricas)
+    colunas_numericas = [
+        c for c, dtype in tipos_colunas.items()
+        if "IntegerType" in dtype or "DoubleType" in dtype or "LongType" in dtype or "FloatType" in dtype
+    ]
+
+    estatisticas_numericas = {}
+    if colunas_numericas:
+        descricao = df.select(colunas_numericas).describe().toPandas()
+        estatisticas_numericas = descricao.set_index('summary').T.to_dict()
+
+    return {
+        "total_registros": total_registros,
+        "total_colunas": total_colunas,
+        "tamanho_mb_aprox": tamanho_mb,
+        "nulos_por_coluna": nulos_por_coluna,
+        "tipos_colunas": tipos_colunas,
+        "estatisticas_numericas": estatisticas_numericas
+    }
 
 
 @monitorar_task
 def load_database(**context):
-    metricas = pd.read_parquet(parquet_gold_path)
+
     os.makedirs("data", exist_ok=True)
     conn = sqlite3.connect('data/pipeline.db')
-    metricas.to_sql("metricas_diarias", conn, if_exists="replace", index=False)
+
+    bronze_file = os.path.join(extract_to_path, file_name)
+    if os.path.exists(bronze_file):
+        bronze_df = pd.read_csv(bronze_file, sep=",", encoding="ISO-8859-1", header=None)
+        bronze_df.to_sql("bronze", conn, if_exists="replace", index=False)
+
+    silver_raw_df = pd.read_parquet(parquet_silver_raw_path)
+    silver_raw_df.to_sql("silver_raw", conn, if_exists="replace", index=False)
+
+    silver_clean_df = pd.read_parquet(parquet_silver_clean_path)
+    silver_clean_df.to_sql("silver_clean", conn, if_exists="replace", index=False)
+
+    gold_df = pd.read_parquet(parquet_gold_path)
+    gold_df.to_sql("gold", conn, if_exists="replace", index=False)
+
     conn.close()
-    return {"registros": len(metricas)}
+
+    return {"registros": len(gold_df)}
 
 
 # =======================================================
