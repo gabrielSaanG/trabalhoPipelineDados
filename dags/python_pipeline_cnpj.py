@@ -245,7 +245,11 @@ def limpar_dados(**context):
                     "DATA_SITUACAO_ESPECIAL": "NAO_INFORMADO",
                     "COMPLEMENTO": "NAO_INFORMADO",
                     "NOME_CIDADE_EXTERIOR": "NAO_INFORMADO",
-                    "PAIS": "BRASIL"
+                    "PAIS": "BRASIL",
+                    "CNAE_FISCAL_SECUNDARIA": "NAO_INFORMADO",
+                    "TIPO_LOGRADOURO": "NAO_INFORMADO",
+                    "SITUACAO_ESPECIAL": "NAO_INFORMADO",
+                    "CEP": "NAO_INFORMADO",
                     })
     df.write.mode("overwrite").parquet(parquet_silver_clean_path)
     return {"registros": df.count()}
