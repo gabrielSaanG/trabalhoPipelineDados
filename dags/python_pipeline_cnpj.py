@@ -2,14 +2,15 @@ import os
 import sqlite3
 import sys
 from zipfile import ZipFile
+
+import requests
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime
 import pandas as pd
 from matplotlib import pyplot as plt
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType
-from pyspark.sql.functions import col, when, sum as _sum, concat_ws
+from pyspark.sql.functions import col, concat_ws
 import pyspark.sql.functions as F
 import psutil
 
@@ -170,8 +171,26 @@ def cria_estrutura_pastas(**context):
 def extract_bronze(**context):
     zip_files = [f for f in os.listdir(zip_file_path) if f.endswith(".zip")]
     if not zip_files:
-        print("Nenhum ZIP encontrado.")
-        return {"registros": 0}
+        print("Nenhum ZIP encontrado. Baixando da URL...")
+
+        try:
+            response = requests.get(file_url, stream=True)
+            response.raise_for_status()
+
+            zip_local_path = os.path.join(zip_file_path, os.path.basename(file_url))
+
+            with open(zip_local_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            print(f"Download concluído: {zip_local_path}")
+
+            zip_files = [os.path.basename(zip_local_path)]
+
+        except Exception as e:
+            print(f"Erro ao baixar arquivo: {e}")
+            return {"registros": 0}
 
     zip_full = os.path.join(zip_file_path, zip_files[0])
     with ZipFile(zip_full, 'r') as z:
